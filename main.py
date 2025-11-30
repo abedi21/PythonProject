@@ -163,7 +163,9 @@ class RecommenderApp:
             value="People-Based",
             command=self._toggle_input_mode,
         ).pack(anchor="w")
-
+        tk.Radiobutton(control_frame, text="Hybrid (best of both worlds)",
+                      variable=self.model_choice, value="Hybrid",
+                      command=self._toggle_input_mode).pack(anchor="w")
         ttk.Label(
             control_frame,
             text="\nHow many songs should we suggest?",
@@ -452,6 +454,14 @@ class RecommenderApp:
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_container)
         self.canvas_widget = self.canvas.get_tk_widget()
         self.canvas_widget.pack(fill="both", expand=True)
+        # Second plot: listener's favourite genres
+        self.fig_genres, self.ax_genres = plt.subplots(figsize=(6, 3))
+        self.ax_genres.set_title("Listener's top liked genres", fontsize=12)
+        self.ax_genres.set_ylabel("Count")
+
+        self.canvas_genres = FigureCanvasTkAgg(self.fig_genres, master=plot_container)
+        self.canvas_genres_widget = self.canvas_genres.get_tk_widget()
+        self.canvas_genres_widget.pack(fill="both", expand=True, pady=(10, 0))
 
     def _initial_load(self):
         self._search_tracks(None)
@@ -464,6 +474,7 @@ class RecommenderApp:
         mode = self.model_choice.get()
 
         if mode == "Song-Based":
+            # Show TRACK INPUT (search bar)
             if not self.name_label.winfo_ismapped():
                 self.name_label.pack(anchor="w")
                 self.listener_name_entry.pack(anchor="w", pady=(0, 5))
@@ -473,7 +484,8 @@ class RecommenderApp:
             self.cf_input_frame.pack_forget()
             self.cbf_input_frame.pack(fill="x")
 
-        else:
+        elif mode == "People-Based":
+            # Show LISTENER INPUT (name)
             if self.add_button.winfo_ismapped():
                 self.add_button.pack_forget()
             if self.name_label.winfo_ismapped():
@@ -482,6 +494,25 @@ class RecommenderApp:
 
             self.cbf_input_frame.pack_forget()
             self.cf_input_frame.pack(fill="x")
+
+        elif mode == "Hybrid":
+            # Hybrid uses BOTH:
+            # - User (for CF part)
+            # - Track (for CBF part)
+            # So we show BOTH input sections.
+
+            # Show user input section
+            if not self.name_label.winfo_ismapped():
+                self.name_label.pack(anchor="w")
+                self.listener_name_entry.pack(anchor="w", pady=(0, 5))
+
+            # Show track search section
+            if not self.add_button.winfo_ismapped():
+                self.add_button.pack(anchor="w", pady=(0, 10), fill="x")
+
+            # Show both frames
+            self.cf_input_frame.pack(fill="x")
+            self.cbf_input_frame.pack(fill="x")
 
     def _search_tracks(self, event):
         search = self.search_term.get().lower().strip()
@@ -636,6 +667,7 @@ class RecommenderApp:
                 self.test_user_var.set(names[0])
 
     def run_recommendation(self):
+        # 1) Read K safely
         try:
             k = int(self.k_value.get())
             if k <= 0 or k > 50:
@@ -648,6 +680,9 @@ class RecommenderApp:
         recommendations = None
         error = None
 
+        # --------------------------------------------------
+        # A) SONG-BASED ONLY
+        # --------------------------------------------------
         if mode == "Song-Based":
             seed_id = self.selected_track_id.get()
             if not seed_id:
@@ -665,7 +700,10 @@ class RecommenderApp:
             )
             self._update_details_panel_for_song_based(seed_id)
 
-        else:
+        # --------------------------------------------------
+        # B) PEOPLE-BASED ONLY
+        # --------------------------------------------------
+        elif mode == "People-Based":
             if not self.model.get_listener_names():
                 messagebox.showwarning(
                     "No listeners", "Please add at least one listener with liked songs."
@@ -694,6 +732,99 @@ class RecommenderApp:
             )
             self._update_details_panel_for_people_based(user_id)
 
+        # --------------------------------------------------
+        # C) HYBRID MODE  (Song + People)
+        # --------------------------------------------------
+        elif mode == "Hybrid":
+            # Need both: a listener + a seed song
+            if not self.model.get_listener_names():
+                messagebox.showwarning(
+                    "No listeners", "Please add at least one listener with liked songs."
+                )
+                return
+
+            build_error = self.model.build_user_item_matrix_from_mongo()
+            if build_error:
+                messagebox.showwarning("Listener data problem", build_error)
+                return
+
+            user_id = self.user_selector.get().strip()
+            if not user_id:
+                messagebox.showwarning(
+                    "Missing listener", "Please choose a listener from the list."
+                )
+                return
+
+            seed_id = self.selected_track_id.get()
+            if not seed_id:
+                messagebox.showwarning(
+                    "Missing song", "Please pick a starting song for the hybrid mix."
+                )
+                return
+
+            # Get a slightly larger pool from each engine so we can merge
+            cbf_recs, cbf_err = self.model.get_content_based_recommendations(
+                seed_id, k * 2
+            )
+            cf_recs, cf_err = self.model.simulate_collaborative_filtering(
+                user_id, k * 2
+            )
+
+            if cbf_err and cf_err:
+                error = f"Hybrid failed.\nSong-based: {cbf_err}\nPeople-based: {cf_err}"
+                recommendations = None
+            else:
+                cbf_ids = list(cbf_recs.index) if cbf_recs is not None else []
+                cf_ids = list(cf_recs.index) if cf_recs is not None else []
+
+                if not cbf_ids and not cf_ids:
+                    error = "Hybrid could not find any suggestions."
+                    recommendations = None
+                else:
+                    # 1) songs that appear in BOTH lists (keep CF order)
+                    common = [tid for tid in cf_ids if tid in cbf_ids]
+                    # 2) CF-only songs
+                    cf_only = [tid for tid in cf_ids if tid not in common]
+                    # 3) CBF-only songs
+                    cbf_only = [tid for tid in cbf_ids if tid not in common]
+
+                    merged_ids = (common + cf_only + cbf_only)[:k]
+
+                    if not merged_ids:
+                        error = "Hybrid could not assemble a final list of songs."
+                        recommendations = None
+                    else:
+                        recommendations = self.model.df.loc[
+                            merged_ids, ["Track", "Artist", "playlist_genre"]
+                        ]
+                        error = None
+
+                        # Text output + details panel
+                        seed_row = self.model.df.loc[seed_id]
+                        title = (
+                            f"Hybrid mix for {user_id} "
+                            f"(starting from: {seed_row['Track']})"
+                        )
+                        self._update_results_text(
+                            title,
+                            recommendations,
+                            "Hybrid (song + people-based)",
+                        )
+
+                        details = (
+                            "Hybrid mode\n"
+                            "We blend song-based similarity with people-based taste.\n\n"
+                            f"Listener: {user_id}\n"
+                            f"Starting song:\n"
+                            f"• Title : {seed_row['Track']}\n"
+                            f"• Artist: {seed_row['Artist']}\n"
+                            f"• Genre : {seed_row['playlist_genre']}\n"
+                        )
+                        self.details_label.config(text=details)
+
+        # --------------------------------------------------
+        # Common error handling for any mode
+        # --------------------------------------------------
         if error:
             messagebox.showerror("Suggestions Error", error)
             self.results_text.config(state=tk.NORMAL)
@@ -813,6 +944,57 @@ class RecommenderApp:
 
         self.fig.tight_layout()
         self.canvas.draw()
+        # Update the genre plot for this listener
+        self._update_genre_plot(test_user)
+
+    def _update_genre_plot(self, user_id: str):
+        if (
+            self.model.user_item_matrix is None
+            or user_id not in self.model.user_item_matrix.index
+        ):
+            self.ax_genres.clear()
+            self.ax_genres.set_title("Listener's top liked genres", fontsize=12)
+            self.ax_genres.text(
+                0.5,
+                0.5,
+                "No data",
+                ha="center",
+                va="center",
+                transform=self.ax_genres.transAxes,
+            )
+            self.fig_genres.tight_layout()
+            self.canvas_genres.draw()
+            return
+
+        user_likes = self.model.user_item_matrix.loc[user_id]
+        liked_ids = user_likes[user_likes > 0].index.tolist()
+
+        self.ax_genres.clear()
+        self.ax_genres.set_title("Listener's top liked genres", fontsize=12)
+
+        if not liked_ids:
+            self.ax_genres.text(
+                0.5,
+                0.5,
+                "This listener has no liked songs yet.",
+                ha="center",
+                va="center",
+                transform=self.ax_genres.transAxes,
+            )
+        else:
+            genre_counts = (
+                self.model.df.loc[liked_ids, "playlist_genre"]
+                .value_counts()
+                .head(8)
+            )
+            self.ax_genres.bar(genre_counts.index, genre_counts.values)
+            self.ax_genres.set_ylabel("Count")
+            self.ax_genres.set_xticklabels(
+                genre_counts.index, rotation=30, ha="right"
+            )
+
+        self.fig_genres.tight_layout()
+        self.canvas_genres.draw()
 
 
 if __name__ == "__main__":

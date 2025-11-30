@@ -458,3 +458,79 @@ class RecommendationSystem:
         # ------------------------------------------------------------
         else:
             return 0.0, "Unknown model function passed for evaluation."
+    def get_hybrid_recommendations(
+        self,
+        user_id: str,
+        seed_track_id: str,
+        alpha: float = 0.6,
+        k: int = 10,
+    ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
+        """
+        Hybrid recommender = mix of:
+        - content-based (audio similarity from a seed song)
+        - people-based (similar listeners)
+
+        alpha = weight for content-based part (0–1).
+        (1 - alpha) = weight for people-based part.
+        """
+
+        alpha = max(0.0, min(1.0, float(alpha)))
+
+        if seed_track_id not in self.df.index:
+            return None, "Seed track is not in the catalog."
+
+        if self.user_item_matrix is None:
+            err = self.build_user_item_matrix_from_mongo()
+            if err:
+                return None, err
+
+        if user_id not in self.user_item_matrix.index:
+            return None, f"No listener profile found for {user_id}."
+
+        user_vector = self.user_item_matrix.loc[user_id]
+        already_liked = set(user_vector[user_vector > 0].index)
+
+        # 1) Content-based candidates
+        cbf_recs, err_cbf = self.get_content_based_recommendations(
+            seed_track_id, k=k * 3
+        )
+        if err_cbf or cbf_recs is None or cbf_recs.empty:
+            cbf_recs = pd.DataFrame(columns=["Track", "Artist", "playlist_genre"])
+
+        cbf_scores: dict[str, float] = {}
+        n_cbf = len(cbf_recs)
+        for rank, tid in enumerate(cbf_recs.index):
+            cbf_scores[tid] = (n_cbf - rank) / max(1.0, n_cbf)
+
+        # 2) People-based candidates
+        cf_recs, err_cf = self.simulate_collaborative_filtering(user_id, k=k * 3)
+        if err_cf or cf_recs is None or cf_recs.empty:
+            cf_recs = pd.DataFrame(columns=["Track", "Artist", "playlist_genre"])
+
+        cf_scores: dict[str, float] = {}
+        n_cf = len(cf_recs)
+        for rank, tid in enumerate(cf_recs.index):
+            cf_scores[tid] = (n_cf - rank) / max(1.0, n_cf)
+
+        # 3) Combine
+        candidate_ids = set(cbf_scores.keys()) | set(cf_scores.keys())
+        if not candidate_ids:
+            return None, "Hybrid engine has no candidates to recommend yet."
+
+        hybrid_scores: dict[str, float] = {}
+        for tid in candidate_ids:
+            score_cbf = cbf_scores.get(tid, 0.0)
+            score_cf = cf_scores.get(tid, 0.0)
+            hybrid_scores[tid] = alpha * score_cbf + (1.0 - alpha) * score_cf
+
+        filtered_ids = [
+            tid for tid in hybrid_scores.keys() if tid not in already_liked
+        ]
+        if not filtered_ids:
+            return None, "No unseen songs left to recommend for this listener."
+
+        filtered_ids.sort(key=lambda tid: hybrid_scores[tid], reverse=True)
+        top_ids = filtered_ids[:k]
+
+        recs = self.df.loc[top_ids, ["Track", "Artist", "playlist_genre"]]
+        return recs, None
