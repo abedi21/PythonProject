@@ -220,6 +220,13 @@ class RecommenderApp:
         )
         self.user_selector.pack(fill="x", pady=(0, 15))
 
+        ttk.Button(
+            self.cf_input_frame,
+            text="Manage this listener's liked songs",
+            command=self.open_liked_songs_manager,
+            style="TButton",
+        ).pack(fill="x", pady=(0, 10))
+
         self.view_likes_button = ttk.Button(
             self.cf_input_frame,
             text="View this listener's liked songs",
@@ -261,6 +268,120 @@ class RecommenderApp:
             justify="left",
         )
         self.details_label.pack(fill="x", pady=(10, 0), anchor="w")
+        # For the "liked songs manager" window
+        self.likes_manager_window = None
+        self.likes_manager_listbox = None
+        self.likes_manager_tracks = []
+        self.likes_manager_listener = None
+    def open_liked_songs_manager(self):
+        """Open a small window showing this listener's liked songs and allow removals."""
+        listener = self.user_selector.get().strip()
+        if not listener:
+            messagebox.showwarning(
+                "No listener selected", "Please choose a listener first."
+            )
+            return
+
+        df, error = self.model.get_liked_tracks_for_listener(listener)
+        if error:
+            messagebox.showerror("MongoDB error", error)
+            return
+
+        if df.empty:
+            messagebox.showinfo(
+                "No liked songs",
+                f"{listener} has no liked songs stored yet.",
+            )
+            return
+
+        # If an old manager window exists, close it
+        if self.likes_manager_window is not None and self.likes_manager_window.winfo_exists():
+            self.likes_manager_window.destroy()
+
+        win = tk.Toplevel(self.master)
+        win.title(f"{listener}'s liked songs")
+        win.geometry("550x400")
+        win.configure(bg="#f0f0f0")
+        self.likes_manager_window = win
+        self.likes_manager_listener = listener
+
+        ttk.Label(
+            win,
+            text=f"Liked songs for {listener}",
+            style="Header.TLabel",
+        ).pack(pady=5, anchor="center")
+
+        listbox = tk.Listbox(
+            win,
+            height=15,
+            width=70,
+            exportselection=False,
+        )
+        listbox.pack(fill="both", expand=True, padx=10, pady=5)
+        self.likes_manager_listbox = listbox
+
+        # Keep track of which track_id is at each index
+        self.likes_manager_tracks = list(df.index)
+
+        for tid, row in df.iterrows():
+            display = f"{row['Track']} – {row['Artist']} ({row['playlist_genre']})"
+            listbox.insert(tk.END, display)
+
+        ttk.Button(
+            win,
+            text="Remove selected song from likes",
+            command=self.remove_selected_like,
+            style="TButton",
+        ).pack(pady=10)
+
+    def remove_selected_like(self):
+        """Remove the selected song from the current listener's liked songs."""
+        if not self.likes_manager_window or not self.likes_manager_listbox:
+            return
+
+        selection = self.likes_manager_listbox.curselection()
+        if not selection:
+            messagebox.showwarning(
+                "No song selected",
+                "Please select a song to remove from this listener's likes.",
+            )
+            return
+
+        idx = selection[0]
+        track_id = self.likes_manager_tracks[idx]
+        listener = self.likes_manager_listener
+
+        confirm = messagebox.askyesno(
+            "Confirm removal",
+            f"Remove this song from {listener}'s liked songs?",
+        )
+        if not confirm:
+            return
+
+        error = self.model.remove_like_for_listener(listener, track_id)
+        if error:
+            messagebox.showerror("MongoDB error", error)
+            return
+
+        # Remove from the listbox + local list
+        self.likes_manager_listbox.delete(idx)
+        del self.likes_manager_tracks[idx]
+
+        # Refresh the user-item matrix so CF + evaluation stay up to date
+        matrix_error = self.model.build_user_item_matrix_from_mongo()
+        if matrix_error:
+            messagebox.showwarning("Matrix warning", matrix_error)
+
+        # Also refresh dropdowns just in case
+        self._refresh_listener_lists()
+
+        if self.likes_manager_listbox.size() == 0:
+            messagebox.showinfo(
+                "No more liked songs",
+                f"{listener} has no more liked songs.",
+            )
+            self.likes_manager_window.destroy()
+            self.likes_manager_window = None
 
     def _setup_evaluation_tab(self, parent):
         eval_paned_window = ttk.PanedWindow(parent, orient=tk.HORIZONTAL)

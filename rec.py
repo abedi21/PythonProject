@@ -110,6 +110,25 @@ class RecommendationSystem:
         except PyMongoError as exc:
             return f"Failed to update MongoDB: {exc}"
 
+    def remove_like_for_listener(self, name: str, track_id: str) -> Optional[str]:
+        """
+        Remove a single track from a listener's liked_tracks array in MongoDB.
+        """
+        if self.listeners_col is None:
+            return "MongoDB is not available. Please check your connection."
+
+        try:
+            result = self.listeners_col.update_one(
+                {"name": name},
+                {"$pull": {"liked_tracks": track_id}},
+            )
+            if result.matched_count == 0:
+                return f"No listener named '{name}' was found in MongoDB."
+            # If track_id wasn't there, $pull is simply a no-op (no error).
+            return None
+        except PyMongoError as exc:
+            return f"Failed to update MongoDB: {exc}"
+
     def get_liked_tracks_for_listener(
         self, name: str
     ) -> Tuple[Optional[pd.DataFrame], Optional[str]]:
@@ -398,6 +417,15 @@ class RecommendationSystem:
 
             if test_user_id not in self.user_item_matrix.index:
                 return 0.0, "Listener not found in user–item matrix."
+            # --- NEW: detect if the user has any similar listeners ---
+            user_vector = self.user_item_matrix.loc[test_user_id].values.reshape(1, -1)
+            all_user_matrix = self.user_item_matrix.values
+            sims = cosine_similarity(user_vector, all_user_matrix)[0]
+            sim_series = pd.Series(sims, index=self.user_item_matrix.index).drop(index=test_user_id)
+
+            # If no similarities > 0 → CF cannot be evaluated
+            if (sim_series > 0).sum() == 0:
+                return 0.0, "People-based score: N/A (Listener has no similar users for evaluation.)"
 
             # listener must have at least 2 liked songs
             user_likes = self.user_item_matrix.loc[test_user_id]
