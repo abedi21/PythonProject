@@ -1,3 +1,5 @@
+import math
+
 import pandas as pd
 import numpy as np
 
@@ -458,6 +460,69 @@ class RecommendationSystem:
         # ------------------------------------------------------------
         else:
             return 0.0, "Unknown model function passed for evaluation."
+
+    def precision_at_k(self, recommended_ids: List[str], relevant_ids: List[str], k: int) -> float:
+        recommended_k = recommended_ids[:k]
+        hits = sum(1 for rid in recommended_k if rid in relevant_ids)
+        return hits / k
+
+    def recall_at_k(self, recommended_ids: List[str], relevant_ids: List[str], k: int) -> float:
+        if len(relevant_ids) == 0:
+            return 0.0
+        recommended_k = recommended_ids[:k]
+        hits = sum(1 for rid in recommended_k if rid in relevant_ids)
+        return hits / len(relevant_ids)
+
+    import math
+
+    def ndcg_at_k(self, recommended_ids: List[str], relevant_ids: List[str], k: int) -> float:
+        dcg = 0.0
+        for i, rid in enumerate(recommended_ids[:k]):
+            if rid in relevant_ids:
+                dcg += 1.0 / math.log2(i + 2)
+
+        ideal_hits = min(k, len(relevant_ids))
+        idcg = sum(1.0 / math.log2(i + 2) for i in range(ideal_hits))
+
+        return dcg / idcg if idcg > 0 else 0.0
+
+
+
+    def holdout_evaluation(self, user_id: str, k: int = 10):
+        if self.user_item_matrix is None:
+            return 0.0, "Matrix missing"
+
+        liked = self.user_item_matrix.loc[user_id]
+        liked_ids = liked[liked > 0].index.tolist()
+        if len(liked_ids) < 3:
+            return 0.0, "User has too few liked songs"
+
+        test_track = liked_ids[-1]  # hold out as test
+        train_tracks = liked_ids[:-1]  # use rest for evaluation
+
+        # relevant = songs same genre as test
+        test_genre = self.df.loc[test_track]["playlist_genre"]
+        relevant_ids = self.df[self.df["playlist_genre"] == test_genre].index.tolist()
+
+        recs, err = self.simulate_collaborative_filtering(user_id, k)
+        if err:
+            return 0.0, err
+
+        recommended_ids = recs.index.tolist()
+
+        precision = self.precision_at_k(recommended_ids, relevant_ids, k)
+        recall = self.recall_at_k(recommended_ids, relevant_ids, k)
+        ndcg = self.ndcg_at_k(recommended_ids, relevant_ids, k)
+
+        return {
+            "precision": precision,
+            "recall": recall,
+            "ndcg": ndcg,
+            "held_out_track": self.df.loc[test_track]["Track"],
+            "held_out_track_id": test_track,
+            "test_genre": test_genre
+        }, None
+
     def get_hybrid_recommendations(
         self,
         user_id: str,
