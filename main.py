@@ -1,3 +1,15 @@
+"""
+main.py
+
+Tkinter GUI for the VibeMatch music recommendation system.
+
+This module:
+- Creates the desktop application window
+- Exposes different recommendation modes (song-based, people-based)
+- Lets users search/like songs and manage listener profiles
+- Visualizes evaluation metrics and dataset insights with matplotlib
+"""
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 import matplotlib.pyplot as plt
@@ -48,8 +60,30 @@ class ScrollableFrame(ttk.Frame):
         """Recolor the scrollable canvas background."""
         self.canvas.configure(bg=bg)
         self.scrollable_frame.configure(style="TFrame")
+# ----------------------------------------------------------------------
+# Tkinter Application Structure
+# ----------------------------------------------------------------------
+# - ScrollableFrame: helper widget for scrollable areas
+# - RecommenderApp:
+#     * _setup_ui: creates the notebook tabs
+#     * _setup_recommendation_tab: "Discover Music"
+#     * _setup_evaluation_tab: "Quality & Comparison"
+#     * _setup_insights_tab: "Insights"
+#     * run_recommendation: triggers the selected engine
+#     * run_ab_test: evaluates engines for a listener
+# ----------------------------------------------------------------------
 
 class RecommenderApp:
+    """
+       Tkinter front-end for VibeMatch.
+
+       Organizes the UI into three tabs:
+       - Discover Music: search, like, and get recommendations
+       - Quality & Comparison: A/B testing between engines
+       - Insights: dataset- and listener-level visualizations
+
+       It delegates all recommendation logic to `RecommendationSystem`.
+       """
     def __init__(self, master):
         self.master = master
         master.title("VibeMatch: Smart Music Recommender")

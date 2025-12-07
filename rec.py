@@ -1,18 +1,38 @@
-import math
+"""
+rec.py
 
+Core recommendation logic for the VibeMatch project.
+
+This module:
+- Loads and preprocesses the Spotify dataset
+- Connects to MongoDB to store listener profiles and liked songs
+- Implements content-based, collaborative, and hybrid recommenders
+- Provides evaluation metrics (AP@k, precision, recall, nDCG) and holdout tests
+"""
+
+
+import math
 import pandas as pd
 import numpy as np
-
 from typing import List, Optional, Tuple, Dict
-
 from pymongo import MongoClient
 from pymongo.errors import PyMongoError
-
 from sklearn.preprocessing import MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 
 
 class RecommendationSystem:
+    """
+        Encapsulates all data science logic for VibeMatch.
+
+        Responsibilities:
+        - Load and clean the Spotify dataset
+        - Extract and scale audio features
+        - Maintain a content-based similarity matrix
+        - Connect to MongoDB and build a user–item matrix
+        - Generate song-based, people-based, and hybrid recommendations
+        - Evaluate models with ranking metrics
+        """
     def __init__(
         self,
         data_path: str,
@@ -473,7 +493,7 @@ class RecommendationSystem:
         hits = sum(1 for rid in recommended_k if rid in relevant_ids)
         return hits / len(relevant_ids)
 
-    import math
+
 
     def ndcg_at_k(self, recommended_ids: List[str], relevant_ids: List[str], k: int) -> float:
         dcg = 0.0
@@ -490,12 +510,12 @@ class RecommendationSystem:
 
     def holdout_evaluation(self, user_id: str, k: int = 10):
         if self.user_item_matrix is None:
-            return 0.0, "Matrix missing"
+            return None, "Matrix missing"
 
         liked = self.user_item_matrix.loc[user_id]
         liked_ids = liked[liked > 0].index.tolist()
         if len(liked_ids) < 3:
-            return 0.0, "User has too few liked songs"
+            return None, "User has too few liked songs"
 
         test_track = liked_ids[-1]  # hold out as test
         train_tracks = liked_ids[:-1]  # use rest for evaluation
